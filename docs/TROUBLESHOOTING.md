@@ -1,0 +1,981 @@
+# Troubleshooting Guide
+
+**[← Back to Main README](../README.md)**
+
+This guide covers common issues and their solutions for the AI Assistant Container, including CUI/AWS Bedrock-specific issues (see [CUI / AWS Bedrock](#cui--aws-bedrock)).
+
+---
+
+## 🔄 First Step: Re-run the Onboarding Script
+
+**Before trying anything else**, re-run the onboarding script:
+
+```bash
+./scripts/onboard.sh
+```
+
+This script is safe to re-run (idempotent) and will:
+- Validate your environment configuration
+- Fix common issues automatically (including misconfigured devcontainer.json)
+- Update any outdated configuration files
+
+If the script completes successfully and you're still having issues, continue to the specific troubleshooting sections below.
+
+---
+
+## Table of Contents
+
+- [First Step: Re-run the Onboarding Script](#-first-step-re-run-the-onboarding-script)
+- [Why Use the Container Instead of Local CLI?](#why-use-the-container-instead-of-local-cli)
+- [Onboarding Script Failures](#onboarding-script-failures)
+- [Common First-Time Setup Issues](#common-first-time-setup-issues)
+- [Authentication to Pull Containers](#authentication-to-pull-containers)
+- [VSCode Container Detection Issues](#vscode-container-detection-issues)
+- [Podman Networking Issues on macOS](#podman-networking-issues-on-macos-infrastructure-containers)
+- [Devcontainer Fails to Open or Rebuild](#devcontainer-fails-to-open-or-rebuild)
+- [File Permission Issues in Devcontainer](#file-permission-issues-in-devcontainer)
+- [Stale `.claude` Named Volume](#stale-claude-named-volume)
+- [Stale `vscode` Named Volume (VS Code Server Install Fails)](#stale-vscode-named-volume-vs-code-server-install-fails)
+- [VS Code Window Crashed (Code 5)](#vs-code-window-crashed-code-5)
+- [Container Clock Drift (SSL Failures After Sleep/Wake)](#container-clock-drift-ssl-failures-after-sleepwake)
+- [Claude Code Prompts for Login Instead of Using API Key](#claude-code-prompts-for-login-instead-of-using-api-key)
+- [403 Errors During Build Project Container Workflow Run](#403-errors-during-build-project-container-workflow-run)
+- [SSH Keys Not Working in Container (1Password)](#ssh-keys-not-working-in-container-1password)
+- [CUI / AWS Bedrock](#cui--aws-bedrock)
+- [Getting Help](#assistance)
+
+---
+
+## Why Use the Container Instead of Local CLI?
+
+**TL;DR:** Running Claude Code locally on your workstation is a security risk. Always use the container.
+
+### The Risk: Supply Chain Attacks via AI CLI Tools
+
+A documented CVE demonstrated that compromised npm packages can detect and exploit locally-installed AI CLI tools (Claude Code, Gemini CLI, etc.) to execute malicious code on developer machines. Because AI CLI tools have broad system access and often run with elevated permissions, they are attractive targets for attackers.
+
+**Attack vector:**
+1. Attacker compromises an npm package (or any dependency in your project)
+2. Malicious payload detects locally-installed AI CLI tools
+3. Payload uses the AI tool's system access to execute attacks (data exfiltration, credential theft, etc.)
+
+### How the Container Protects You
+
+| Risk | Local CLI | Container |
+|------|-----------|-----------|
+| Access to full filesystem | ✅ Yes | ❌ Only project directory |
+| Access to SSH keys, credentials | ✅ Yes | ❌ No |
+| Access to browser cookies/sessions | ✅ Yes | ❌ No |
+| Can install system packages | ✅ Yes | ❌ No |
+| Can modify system configs | ✅ Yes | ❌ No |
+| Blast radius if compromised | 🔴 Entire machine | 🟢 Project directory only |
+
+### Container Security Features
+
+The AI Assistant Container provides defense-in-depth:
+
+1. **Isolated filesystem** - Only your project directory is mounted
+2. **Minimal toolset** - Reduced attack surface compared to your full workstation
+3. **No network access to internal services** - Cannot reach your corporate VPN, local databases, etc.
+4. **Ephemeral environment** - Rebuilding the container resets to a known-good state
+5. **CUI containers add firewall** - Deny-by-default network policy blocks all non-whitelisted traffic
+
+### What About `--dangerously-skip-permissions`?
+
+Even when running Claude with `--dangerously-skip-permissions` (which bypasses confirmation prompts), the container limits what Claude can access. On your local machine, this flag gives Claude unrestricted access to everything. In the container, Claude still can't escape the sandbox.
+
+### Recommendation
+
+**Always use the container for AI-assisted development.** If you've been running Claude Code locally:
+
+1. Stop using the local installation
+2. Set up the container following the [main README](../README.md)
+3. Continue your work inside the container
+
+**Questions?** Ask in **#r-and-d** Slack channel.
+
+---
+
+## Onboarding script failures
+
+**If the onboarding script fails:**
+
+1. **Check the log file** for detailed error information:
+
+   **Option A: View in Terminal** (if you're comfortable with command line)
+   ```bash
+   cat ./ai-assistant-onboard.log
+   ```
+   This displays the log file contents in your terminal window.
+
+   **Option B: Open in a Text Editor** (easier for most users)
+   - Open Finder
+   - Navigate to your project folder (where you cloned the repository)
+   - Find the file named `ai-assistant-onboard.log`
+   - Double-click to open it in TextEdit or your preferred text editor
+   - Or right-click → Open With → TextEdit
+
+2. **Common issues and solutions:**
+   - **Xcode CLI Tools installation dialog** - Click 'Install' when prompted; script will wait for completion automatically
+   - **Admin access denied** - Enable admin privileges in Rippling (see Prerequisites)
+   - **Podman machine fails** - Check available disk space (requires ~20GB)
+   - **GitHub authentication fails** - Verify network connectivity, try manual login: `gh auth login -s read:packages`
+   - **Container registry access denied** - Contact administrator to request access to rise8-us/XPai organization
+
+3. **Re-run the script** - Safe to re-run, it will skip already-completed steps:
+   ```bash
+   ./scripts/onboard.sh
+   ```
+
+4. **Need help?** Ask in #r-and-d Slack channel for assistance
+
+## Common First-Time Setup Issues
+
+### Password not accepted or stuck at password prompt
+
+- **Cause:** Hidden input - you can't see what you're typing
+- **Solution:** Type your password carefully (even though invisible) and press Enter
+- If you make a mistake, press Ctrl+C to cancel and re-run the script
+
+### Script seems stuck with dots appearing
+
+- **Expected behavior:** This is normal during Xcode Command Line Tools installation
+- **What to do:**
+  1. Look for "Software Update" or "Install Command Line Tools" dialog
+  2. Click "Install" if prompted
+  3. Wait for completion (may take 10-15 minutes)
+  4. Script continues automatically - do not close terminal
+
+### Zscaler certificate errors when pulling containers
+
+**Symptom:**
+```
+Error: unable to copy from source docker://ghcr.io/...: tls: failed to verify certificate: x509: certificate signed by unknown authority
+```
+
+**Cause:** Podman cannot verify SSL/TLS certificates because Zscaler's CA certificates are not configured or are outdated in the Podman machine. This typically happens when:
+- Setup was run with Zscaler turned off
+- Podman machine was created before Zscaler was started
+- Certificates weren't properly synced during setup
+- **It was working before but suddenly stopped:** Zscaler certificates were renewed/updated by IT (certificates in Podman VM are now stale)
+
+**Prevention:** Keep Zscaler ON during setup - the script automatically detects and configures certificates.
+
+**Solution - Manual Certificate Configuration:**
+
+> 💡 **Was working before but suddenly stopped?** This usually means your IT department renewed or updated Zscaler certificates. The certificates in your Podman machine are now outdated. Follow the steps below to extract fresh certificates from your macOS keychain and sync them to Podman. You don't need to reinstall anything - just refresh the certificates.
+
+⚠️ **Open a terminal window before proceeding** - All commands below must be run in Terminal (Applications → Utilities → Terminal, or use GitHub Desktop → Right-click repository → "Open in Terminal")
+
+**Step 1: Verify Zscaler is running**
+```bash
+# Check if Zscaler process is active
+ps aux | grep -i "[Z]scaler"
+```
+
+If Zscaler is not running, start it before proceeding.
+
+**Step 2: Verify Zscaler certificates are in macOS keychain**
+```bash
+# List Zscaler certificates
+security find-certificate -c "Zscaler" /Library/Keychains/System.keychain
+```
+
+You should see output showing Zscaler certificate(s). If not, contact your IT administrator to install Zscaler certificates.
+
+**Step 3: Extract and configure certificates for Podman**
+```bash
+# Create certificate directory for ghcr.io
+mkdir -p ~/.config/containers/certs.d/ghcr.io
+
+# Extract Zscaler certificates from macOS keychain
+security find-certificate -c "Zscaler" -a -p /Library/Keychains/System.keychain > ~/.config/containers/certs.d/ghcr.io/ca.crt
+
+# Verify certificate file was created
+ls -lh ~/.config/containers/certs.d/ghcr.io/ca.crt
+```
+
+**Step 4: Sync certificates to Podman machine**
+
+The certificates need to be inside the Podman VM. The easiest way is to recreate the machine (it will auto-sync certificates during initialization):
+
+```bash
+# Stop and remove the existing Podman machine
+podman machine stop
+podman machine rm
+
+# Recreate Podman machine (certificates will auto-sync from ~/.config/containers/certs.d/)
+podman machine init --cpus 6 --memory 16384
+podman machine start
+```
+
+**Step 5: Verify the fix**
+
+Test pulling a container image:
+```bash
+# Test connection to GitHub Container Registry
+podman pull ghcr.io/rise8-us/xpai/ai-assistant-home:latest
+```
+
+If successful, you should see download progress instead of certificate errors.
+
+**Step 6: Authenticate to GitHub Container Registry**
+
+After fixing certificates, you still need GitHub authentication (see [Authentication to pull containers](#authentication-to-pull-containers) section):
+```bash
+# Authenticate to ghcr.io
+gh auth logout
+gh auth login -s read:packages
+podman logout ghcr.io
+gh auth token | podman login ghcr.io -u $(gh api user --jq .login) --password-stdin
+```
+
+**Troubleshooting:**
+
+- **Still getting certificate errors after fix:** Verify certificates are in both locations:
+  - Host: `~/.config/containers/certs.d/ghcr.io/ca.crt`
+  - VM: Run `podman machine ssh "sudo cat /etc/containers/certs.d/ghcr.io/ca.crt"` to verify
+
+- **Certificate file is empty:** Re-run the extraction command in Step 3. Ensure Zscaler is running.
+
+- **Podman machine won't start after recreation:** Check available resources (disk space, memory). Review logs: `podman machine start`
+
+- **Need help?** Contact #r-and-d Slack channel with:
+  - Output of `security find-certificate -c "Zscaler" /Library/Keychains/System.keychain`
+  - Output of `ls -lh ~/.config/containers/certs.d/ghcr.io/`
+  - Full error message from `podman pull` command
+
+### Container Clock Drift (SSL Failures After Sleep/Wake)
+
+**Symptom:**
+
+SSL/TLS certificate validation errors when running `curl`, `git`, Claude Code, or other tools that make HTTPS requests. You may also see a warning banner when opening a new terminal:
+
+```
+================================================================
+  WARNING: Container clock is off by 3542 seconds
+================================================================
+```
+
+Common error messages include:
+- `curl: (60) SSL certificate problem: certificate is not yet valid`
+- `fatal: unable to access 'https://...': SSL certificate problem`
+- Claude Code API calls failing with certificate errors
+- **On CUI/Bedrock**: AWS request-signing errors (a skewed clock invalidates AWS SigV4 signatures too) — don't mistake this for [expired Bedrock credentials](#cui--aws-bedrock); refreshing credentials won't fix a clock problem
+
+**Cause:**
+
+When macOS laptops sleep and wake, the Podman VM's clock drifts from wall-clock time. Containers inherit the VM's stale clock, causing SSL/TLS certificates to appear "not yet valid" because the container thinks it's in the past.
+
+**How auto-fix works:**
+
+- **Non-CUI containers** (with `--cap-add=SYS_TIME` in devcontainer.json): A login-time clock check runs every time you open a terminal and corrects the clock. You'll see a brief message: `[Clock Sync] Corrected container clock (was off by Ns)`
+- **CUI containers** (firewall mode): The firewall-manager sidecar syncs the clock via NTP at startup, **and every ~60 seconds while running** (`CLOCK_SYNC_INTERVAL_SECONDS`, default 60). Because firewall-manager and the ai-assistant container share the same Podman VM kernel clock, this self-heals drift from a sleep/wake cycle automatically, even though the ai-assistant container itself cannot self-fix (`cap_drop: ALL`). There's a brief window - up to one sync interval after waking - where the warning banner can still legitimately appear before the periodic sync catches up.
+
+**Manual fix if you don't want to wait ~60 seconds:**
+
+Run on your **host machine** (outside the container) - this steps the Podman VM's clock immediately, with no restart and no interruption to your running containers:
+
+```bash
+podman machine ssh -- sudo chronyc burst 4/4
+podman machine ssh -- sudo chronyc makestep
+```
+
+If that doesn't help (e.g. periodic sync is disabled or NTP is unreachable), the last resort is a full restart:
+
+```bash
+podman machine stop && podman machine start
+```
+
+Then reopen your terminal in the container.
+
+**Opt-out (non-CUI only):**
+
+`CLOCK_CHECK_DISABLED=1` in your `.env` file disables the **non-CUI login-time check** described above. It has no effect on CUI containers either way: the firewall already blocks the OTEL endpoint that check depends on, so it silently no-ops there regardless of this setting — and the firewall-manager's periodic NTP resync (the thing actually fixing CUI's clock drift) has no opt-out.
+
+```
+CLOCK_CHECK_DISABLED=1
+```
+
+### `code` command not found after setup
+
+- **Cause:** Terminal needs to be restarted to load new PATH
+- **Solution:**
+  1. Close terminal completely (Cmd+Q)
+  2. Open GitHub Desktop
+  3. Right-click repository → "Open in Terminal"
+  4. Try `code .` again
+
+## Authentication to pull containers
+
+If your project team encounters authentication issues with `ghcr.io`, follow these steps on your host machine:
+
+1. Log into GitHub CLI with package read permissions:
+   ```bash
+   gh auth logout
+   gh auth login -s read:packages
+   ```
+
+2. Use your GitHub CLI token to authenticate with the container registry:
+   ```bash
+   podman logout ghcr.io
+   gh auth token | podman login ghcr.io -u $(gh api user --jq .login) --password-stdin
+   ```
+
+3. Test pulling the image:
+  ```bash
+  podman pull ghcr.io/rise8-us/xpai/ai-assistant-home@sha:<digest>
+  ```
+
+## VSCode container detection issues
+
+If VSCode doesn't automatically detect or prompt to reopen in the container:
+
+1. Verify the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) is installed
+2. Check container runtime is configured in VSCode settings:
+   ![devcontainer settings](devcontainer-settings.png)
+   ![container runtime](container-runtime.png)
+3. Manually trigger: Press `Cmd+Shift+P` → "Dev Containers: Reopen in Container"
+
+## Podman networking issues on macOS (infrastructure containers)
+
+**Applies to:** Projects that run infrastructure containers (databases, auth servers, etc.) alongside the AI assistant container using docker-compose or similar orchestration.
+
+**Symptom:** Browser cannot reach services via custom hostnames (e.g., `auth.myproject.localhost`, `db.myproject.localhost`) even though `/etc/hosts` entries exist. Authentication flows hang or timeout.
+
+**Root Cause:** Podman on macOS uses user-mode networking (slirp4netns) which only forwards ports via IPv6 loopback (::1). Standard IPv4-only `/etc/hosts` entries (127.0.0.1) are insufficient for hostname resolution in browsers.
+
+**Solution:** Add both IPv4 and IPv6 loopback entries to `/etc/hosts`:
+
+```bash
+# /etc/hosts - Both IPv4 and IPv6 entries required for Podman on macOS
+127.0.0.1  myproject.localhost
+127.0.0.1  auth.myproject.localhost
+127.0.0.1  db.myproject.localhost
+
+# IPv6 entries (REQUIRED for Podman on macOS with user-mode networking)
+::1  myproject.localhost
+::1  auth.myproject.localhost
+::1  db.myproject.localhost
+```
+
+**Recommended Approach:** Create an idempotent script in your project's `infra/` or `scripts/` directory:
+
+```bash
+#!/bin/bash
+# scripts/update-hosts.sh - Idempotent hosts file configuration
+
+HOSTS_ENTRIES=(
+  "127.0.0.1 myproject.localhost"
+  "127.0.0.1 auth.myproject.localhost"
+  "127.0.0.1 db.myproject.localhost"
+  "::1 myproject.localhost"
+  "::1 auth.myproject.localhost"
+  "::1 db.myproject.localhost"
+)
+
+echo "Updating /etc/hosts with required entries..."
+for ENTRY in "${HOSTS_ENTRIES[@]}"; do
+  if ! grep -qF "$ENTRY" /etc/hosts; then
+    echo "Adding: $ENTRY"
+    echo "$ENTRY" | sudo tee -a /etc/hosts > /dev/null
+  else
+    echo "Already exists: $ENTRY"
+  fi
+done
+echo "✅ Hosts file updated successfully"
+```
+
+**Usage:**
+```bash
+chmod +x scripts/update-hosts.sh
+./scripts/update-hosts.sh
+```
+
+**Note:** Docker Desktop on macOS does not have this limitation as it uses a different networking implementation (vpnkit). This issue is specific to Podman's user-mode networking.
+
+## Devcontainer fails to open or rebuild
+
+**Symptom:**
+
+When attempting to open or rebuild the devcontainer, you see an error dialog:
+
+![Devcontainer Open Error](devcontainerOpenError.png)
+
+"An error occurred setting up the container."
+
+**Common Causes:**
+1. Missing `.env` file (most common)
+2. Configuration errors in `.devcontainer/devcontainer.json`
+3. Container image pull failures
+4. Podman machine issues
+
+**Solution:**
+
+**Step 1: View detailed error messages**
+
+The error dialog only shows a generic message. To see the actual error details:
+
+1. Click **"Edit devcontainer.json Locally"** or **"More Actions..."**
+2. Select **"Reopen Folder Locally"** to exit the container attempt
+3. VSCode will automatically open the error log in an editor window on the right side
+4. Review the error messages (scroll to the bottom for the most recent errors)
+5. Copy the full error output for diagnosis
+
+**Step 2: Check for missing .env file (most common issue)**
+
+The most common cause is a missing `.env` file with your Anthropic API key:
+
+```bash
+# Check if .env file exists
+ls -la .env
+
+# If missing, copy from example and add your API key
+cp .env.example .env
+
+# Edit .env and add your API key
+# ANTHROPIC_API_KEY=sk-ant-api03-...
+```
+
+After creating/updating `.env`, try reopening the container:
+- Press `Cmd + Shift + P`
+- Type "Dev Containers: Reopen in Container"
+
+**Step 3: Get AI assistance with error messages**
+
+If the issue isn't the missing `.env` file, use an AI assistant to diagnose:
+
+1. Copy all the error messages from the Dev Containers output
+2. Go to [Google Gemini](https://gemini.google.com) or similar AI tool
+3. Paste the error messages and ask: "What is causing this devcontainer error and how do I fix it?"
+
+## File permission issues in devcontainer
+
+If you experience file permission problems inside the devcontainer (e.g., unable to create files/folders, files owned by 'root' or 'dialout' instead of 'aiAssistant', "Permission denied" errors), this can be caused by two different Podman configuration issues.
+
+### Files Owned by Root (rootful mode)
+
+If files are owned by 'root' or 'dialout' instead of 'aiAssistant', this is typically caused by running podman in rootful mode instead of rootless mode.
+
+**Diagnosis:**
+
+Check if your podman machine is running in rootless mode:
+```bash
+podman info --format '{{.Host.Security.Rootless}}'
+```
+
+This should return `true`. If it returns `false`, you are running in rootful mode.
+
+**Solution:**
+
+Rootless mode is the default for podman. If your machine is running in rootful mode, the recommended approach is to delete the podman machine and recreate it:
+
+```bash
+# Stop and delete the current machine
+podman machine stop
+podman machine rm
+
+# Create and start a new machine (will default to rootless)
+podman machine init
+podman machine start
+```
+
+After recreating the machine, rebuild your devcontainer in VSCode.
+
+**Note:** If permission errors persist after switching to rootless mode, you need to map your host user to `aiAssistant` inside the container. `aiAssistant` is pinned to UID/GID 1001 — this value is stable across image updates and will not silently change when the base image changes.
+
+Projects set up from the current starter template already include this mapping. If your project was set up before this fix, add it manually:
+
+**Non-CUI projects** — add to `runArgs` in `.devcontainer/devcontainer.json`:
+
+```json
+"--userns=keep-id:uid=1001,gid=1001"
+```
+
+**CUI projects** — add to the `ai-assistant` service in `.devcontainer/docker-compose.firewall.yml`:
+
+```yaml
+userns_mode: "keep-id:uid=1001,gid=1001"
+```
+
+Then rebuild the devcontainer.
+
+## Stale `.claude` Named Volume
+
+**Symptom:**
+
+Inside the devcontainer, Claude Code fails to start, refuses to write to `/home/aiAssistant/.claude/...`, or is missing built-in commands/skills. This commonly appears after the base image has been updated.
+
+**Cause:**
+
+The devcontainer mounts `/home/aiAssistant/.claude` as a named volume so Claude Code state persists across rebuilds. Named volumes are seeded from the image **only on first creation** — afterward, the existing volume is reused as-is, even when the new image has different ownership or seeded contents.
+
+**Solution:**
+
+Delete the volume and let the devcontainer recreate it from the current image.
+
+> ⚠️ This discards any local state stored in the volume (Claude Code sessions, locally added settings under `.claude`). Project files in your workspace are unaffected.
+
+1. Close VS Code so the devcontainer stops.
+2. On your **host machine**, list volumes and find the one matching your project (pattern: `<project-name>-claude-config`):
+
+   ```bash
+   podman volume list
+   ```
+
+   Example output:
+   ```
+   DRIVER      VOLUME NAME
+   local       vscode
+   local       mission-os-core-claude-config
+   local       xpai-ai-assistant-container-claude-config
+   ```
+
+3. Remove the volume:
+
+   ```bash
+   podman volume rm <project-name>-claude-config
+   ```
+
+4. Reopen the project in VS Code. The devcontainer will recreate and re-seed the volume from the current image.
+
+### Permission Denied Errors (libkrun on macOS)
+
+**Context:** Common issue after JAMF migration affecting Podman users on macOS.
+
+**Symptom:**
+
+"Permission denied" errors when trying to create files, modify existing files, or perform git operations inside the devcontainer.
+
+**Root Cause:**
+
+The libkrun hypervisor causes UID/GID mismatches between your Mac user and the container user. With libkrun, file ownership doesn't map correctly, causing permission issues even when UIDs appear to match.
+
+**Diagnosis:**
+
+Check if you're using libkrun or Apple Hypervisor with Rosetta:
+
+```bash
+# Check if Rosetta is enabled
+# If affected: "Rosetta": false
+# If correct: "Rosetta": true
+podman machine inspect | grep Rosetta
+
+# Check provider config
+# If affected: provider = "libkrun"
+# If correct: provider = "applehv"
+cat ~/.config/containers/containers.conf | grep provider
+```
+
+If you see `"Rosetta": false` or `provider = "libkrun"`, you need to switch to Apple Hypervisor.
+
+**Solution:**
+
+Switch to Apple Hypervisor with Rosetta. **Important:** Steps must be done in this exact order:
+
+```bash
+# 1. Stop and remove machine (while config still shows libkrun)
+podman machine stop
+podman machine rm
+
+# 2. List and remove system connections
+podman system connection list
+# Remove each connection listed (example: podman-machine-default-root)
+podman system connection rm <connection-name>
+
+# 3. Edit config with vim
+vim ~/.config/containers/containers.conf
+# Change the [machine] section to:
+provider = "applehv"
+
+# 4. Recreate machine
+podman machine init --now
+
+# 5. Verify Rosetta is enabled
+podman machine inspect | grep Rosetta
+# Should show: "Rosetta": true
+```
+
+**Verification:**
+
+After recreating the Podman machine and restarting your devcontainer:
+
+```bash
+# Test file creation
+touch /workspace/test-file.txt && rm /workspace/test-file.txt
+
+# Test git operations
+git status
+```
+
+**Note on UID mapping:** `aiAssistant` is pinned to UID/GID 1001. If you still see permission errors after switching to Apple Hypervisor, the `userns` mapping may also be needed. See the rootful mode section above for how to add it to your project's devcontainer config.
+
+Both should work without permission errors.
+
+## Stale `vscode` Named Volume (VS Code Server Install Fails)
+
+**Symptom:**
+
+```
+mkdir: cannot create directory '/vscode/vscode-server': Permission denied
+```
+
+**Cause:**
+
+The Dev Containers extension caches the VS Code server in a named volume (`vscode`) mounted at `/vscode`. Named volumes are seeded from the image only on first creation. A volume created before the `/vscode` fix keeps its old restrictive permissions, even after the image is updated.
+
+**Solution:**
+
+1. Close VS Code.
+2. On your **host machine**: `podman volume rm vscode` (if in use, `podman rm` the stopped devcontainer containers first).
+3. Reopen the project. The volume re-seeds with the correct permissions (`1777`); VS Code re-downloads the server.
+
+## VS Code Window Crashed (Code 5)
+
+**Symptom:**
+
+VS Code crashes with a dialog showing:
+
+![VS Code Window Crashed](vscode-window-crashed.png)
+
+```
+The window terminated unexpectedly (reason: 'crashed', code: '5')
+```
+
+The crash may happen immediately on opening the workspace, or hours later. macOS crash reports (found in `~/Library/Logs/DiagnosticReports/`, files named `Code Helper (Renderer)-*.ips`) show the crash in `Code Helper (Renderer)` with exception type `EXC_BREAKPOINT` / `SIGTRAP` on the `CrRendererMain` thread.
+
+**Cause:**
+
+VS Code's renderer process exhausts system resources -- either file handle limits or V8 heap memory -- from monitoring and indexing too many files. This commonly happens in projects with large `node_modules` directories, build outputs (`dist/`, `build/`, `.next/`), or other generated files.
+
+Two factors typically combine to cause this:
+
+- **`node_modules` directories on the workspace filesystem** -- VS Code watches and indexes these directories. In monorepo projects (using npm/pnpm/yarn workspaces), each sub-project may have its own `node_modules` that needs to be moved off the workspace.
+- **Large generated files** -- Test coverage reports, mutation testing output (e.g., `stryker-incremental.json`), and other generated artifacts that VS Code loads into memory for indexing and search.
+
+**Solution:**
+
+Apply all three steps in `.devcontainer/devcontainer.json`, then rebuild the devcontainer.
+
+**Step 1: Move `node_modules` to volumes** (removes them from the watched workspace entirely)
+
+Add volume mounts for every `node_modules` directory in the project. To find them:
+
+```bash
+# Run inside the devcontainer to find all node_modules directories
+find /workspaces/$(basename "$PWD") -name node_modules -type d -maxdepth 3
+```
+
+For a single-package project, mount the root `node_modules`:
+
+```json
+"mounts": [
+  "source=YOURPROJECT-node-modules,target=/workspaces/${localWorkspaceFolderBasename}/node_modules,type=volume",
+  "source=YOURPROJECT-npm-cache,target=/home/aiAssistant/.npm,type=volume"
+]
+```
+
+For monorepo projects, add a volume for each sub-project's `node_modules` as well:
+
+```json
+"mounts": [
+  "source=YOURPROJECT-node-modules,target=/workspaces/${localWorkspaceFolderBasename}/node_modules,type=volume",
+  "source=YOURPROJECT-backend-node-modules,target=/workspaces/${localWorkspaceFolderBasename}/backend/node_modules,type=volume",
+  "source=YOURPROJECT-frontend-node-modules,target=/workspaces/${localWorkspaceFolderBasename}/frontend/node_modules,type=volume",
+  "source=YOURPROJECT-npm-cache,target=/home/aiAssistant/.npm,type=volume"
+]
+```
+
+**Step 2: Enable file watcher and indexing exclusions** (reduces resource usage for remaining files)
+
+Add both `files.watcherExclude` (prevents filesystem monitoring) and `files.exclude` (prevents indexing and loading into memory) in the `settings` block inside `customizations.vscode`:
+
+```json
+"settings": {
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/dist/**": true,
+    "**/build/**": true,
+    "**/.next/**": true,
+    "**/.pnpm-store/**": true,
+    "**/target/**": true,
+    "**/__pycache__/**": true,
+    "**/reports/**": true,
+    "**/coverage/**": true
+  },
+  "files.exclude": {
+    "**/reports/mutation/**": true,
+    "**/stryker-incremental.json": true,
+    "**/coverage/**": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "**/build": true,
+    "**/.next": true,
+    "**/target": true,
+    "**/reports": true,
+    "**/coverage": true
+  }
+}
+```
+
+To identify additional large files in your workspace that should be excluded:
+
+```bash
+# Find files over 1MB in the workspace (excluding node_modules and .git)
+find . -not -path '*/node_modules/*' -not -path '*/.git/*' -size +1M -exec ls -lh {} \;
+```
+
+**Step 3: Rebuild the devcontainer**
+
+- Press `Cmd + Shift + P` (macOS) or `Ctrl + Shift + P` (Windows/Linux)
+- Type "Dev Containers: Rebuild Container"
+- After rebuild, run your package manager's install command to populate the volumes
+
+**Why volumes and exclusions together?** Volumes move `node_modules` entirely out of the workspace so VS Code never sees them. Watcher and indexing exclusions handle remaining large directories (build outputs, generated reports, caches) that stay in the workspace. Both are needed -- exclusions alone still allow initial directory scans that accumulate memory over time.
+
+**Diagnosing persistent crashes:**
+
+If the crash continues after applying all steps, identify what is consuming memory:
+
+1. Press `Cmd + Shift + P` (macOS) or `Ctrl + Shift + P` (Windows/Linux)
+2. Type "Developer: Open Process Explorer"
+3. Monitor the memory column for `extensionHost`, `renderer`, and individual processes
+4. Note which process is growing over time
+
+**Finding crash reports on the host machine:**
+
+- **macOS:** `~/Library/Logs/DiagnosticReports/` (files named `Code Helper (Renderer)-*.ips`)
+- **Linux:** `~/.config/Code/logs/` or system journal (`journalctl --user`)
+
+## Claude Code Prompts for Login Instead of Using API Key
+
+**Symptom:**
+
+When you open a terminal inside the devcontainer and Claude Code starts, instead of being ready to use, it shows a "Welcome to Claude Code" screen with login options:
+
+![Claude Code Login Prompt](claude-code-login-prompt.png)
+
+```
+Select login method:
+  1. Claude account with subscription - Pro, Max, Team, or Enterprise
+  2. Anthropic Console account - API usage billing
+```
+
+A browser window may also open asking you to "Select organization" on the Claude Developer Platform.
+
+**Cause:**
+
+Claude Code cannot find your `ANTHROPIC_API_KEY` environment variable. This happens when:
+- The `.env` file is missing from your project root
+- The `.env` file exists but doesn't contain `ANTHROPIC_API_KEY`
+- The `ANTHROPIC_API_KEY` value is empty or malformed
+- The `devcontainer.json` is misconfigured (not loading the `.env` file)
+
+**Solution:**
+
+1. **Re-run the onboarding script** (fixes most cases including misconfigured devcontainer.json):
+   ```bash
+   ./scripts/onboard.sh
+   ```
+   The script will validate and fix your configuration automatically.
+
+2. **If that doesn't work**, check your `.env` file manually:
+   ```bash
+   ls -la .env
+   ```
+
+3. **If `.env` is missing, create it from the example:**
+   ```bash
+   cp .env.example .env
+   ```
+
+4. **Edit `.env` and add your Anthropic API key:**
+   ```bash
+   # Open .env in your editor and add:
+   ANTHROPIC_API_KEY=sk-ant-api03-your-key-here
+   ```
+
+5. **Rebuild the devcontainer** to pick up the new environment variable:
+   - Press `Cmd + Shift + P` (macOS) or `Ctrl + Shift + P` (Windows/Linux)
+   - Type "Dev Containers: Rebuild Container"
+   - Select it and wait for the rebuild to complete
+
+6. **Verify the fix** - After rebuild, open a new terminal. Claude Code should start without prompting for login.
+
+**Note:** To obtain an Anthropic API key, submit a ticket in the **#helpdesk** Slack channel.
+
+## 403 Errors During Build Project Container Workflow Run
+
+**Symptom:**
+
+When the GitHub Actions workflow "Build Project Container" runs (typically triggered on push to main or manually), the workflow fails with a 403 Forbidden error when trying to push the container image to the GitHub Container Registry:
+
+```
+Error: buildx failed with: ERROR: failed to build: failed to solve: failed to push
+ghcr.io/rise8-us/<repo name>/project-container:test-5c88db2dbf9fe307fd24a7831b5171a7c02c9b1f:
+unexpected status from HEAD request to
+https://ghcr.io/v2/rise8-us/<repo name>/project-container/blobs/sha256:<digest>:
+403 Forbidden
+```
+
+**Cause:**
+
+The GitHub Actions workflow (`GITHUB_TOKEN`) does not have write permissions to push images to the GitHub Container Registry (ghcr.io) for this repository's package.
+
+**Solution:**
+
+You need to grant the repository's workflow write access to the container package through the package settings:
+
+1. **Navigate to the package settings page:**
+   - Go to the package URL (replace `YOUR-REPO` and `PACKAGE-NAME` with your actual repository and package names):
+   ```
+   https://github.com/orgs/rise8-us/packages/container/YOUR-REPO%2FPACKAGE-NAME/settings
+   ```
+
+   For example, if your repository is `penava-devcontainer` and package is `project-container`:
+   ```
+   https://github.com/orgs/rise8-us/packages/container/penava-devcontainer%2Fproject-container/settings
+   ```
+
+2. **Add repository access:**
+   - Click "Add Repository" under "Manage Actions Access" section
+   - Search for and select your repository (e.g., `rise8-us/penava-devcontainer`)
+   - Set the role to **"Write"**
+   - Click "Add repository"
+
+3. **Verify the fix:**
+   - Re-run the failed workflow/push commit to trigger the workflow again
+   - The workflow should now successfully push the container image
+
+**Note:** This is typically a one-time setup step. Once the repository has write access to the package, all subsequent workflow runs will succeed.
+
+## SSH Keys Not Working in Container (1Password)
+
+**Symptom:**
+
+Running `ssh -T git@github.com` (or another Git host) inside the container fails with "Permission denied (publickey)" even though SSH works on your host machine.
+
+**Cause:**
+
+VS Code Dev Containers forward your SSH agent automatically, but only if `SSH_AUTH_SOCK` is set in the terminal session that launched VS Code. The most common cause is that VS Code or your terminal was already open when you added the `SSH_AUTH_SOCK` export to your shell profile.
+
+**Solution:**
+
+1. Confirm `SSH_AUTH_SOCK` is in your `~/.zshrc` (or `~/.bashrc`):
+   ```bash
+   export SSH_AUTH_SOCK="$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+   ```
+
+2. **Fully quit everything** — closing windows is not enough:
+   - Quit VS Code (`Cmd+Q`)
+   - Quit Terminal.app (`Cmd+Q`) — every terminal window must be gone
+   - Open a **fresh** terminal (GitHub Desktop → right-click repo → "Open in Terminal")
+   - Run `code .`
+   - Rebuild the container (`Cmd+Shift+P` → "Dev Containers: Rebuild Container")
+
+3. Test inside the container:
+   ```bash
+   ssh -T git@github.com
+   ```
+
+For full setup instructions (including 1Password agent configuration), see [Using SSH Keys from 1Password](ADVANCED-TOPICS.md#using-ssh-keys-from-1password).
+
+## CUI / AWS Bedrock
+
+Issues specific to CUI projects running Claude through AWS GovCloud Bedrock. For setup, see the [CUI Setup Guide](SETUP-CUI.md); for the daily sign-in routine, see [Getting Back Into Your Container](quick-start/getting-back-in.md).
+
+**See also**, elsewhere in this doc: [Container Clock Drift](#container-clock-drift-ssl-failures-after-sleepwake) (CUI firewall containers self-heal via NTP sync) and [File Permission Issues in Devcontainer](#file-permission-issues-in-devcontainer) (`userns_mode` fix, CUI-specific config) and [Stale `.claude` Named Volume](#stale-claude-named-volume) (if Claude Code session history isn't surviving rebuilds).
+
+### "403 The security token included in the request is expired" error
+
+This is the most common error and means your AWS credentials have expired (8-hour limit). Run the [daily refresh routine](quick-start/getting-back-in.md#morning-refresh-before-you-start) — `./scripts/refresh-credentials.sh` (or the manual `aws sso login` + `export-credentials` + rebuild steps) — then `claude --continue` to pick your conversation back up.
+
+**Why this happens:** The container reads `.env.bedrock` only at startup. Even if you refresh credentials, the running container still has the old expired tokens. Rebuilding loads the fresh credentials.
+
+> **Not actually a credential problem?** If you're also seeing SSL certificate errors, or the `WARNING: Container clock is off by Ns` banner, this isn't credential expiration — it's [Container Clock Drift](#container-clock-drift-ssl-failures-after-sleepwake) (a skewed clock breaks AWS request signing too). Refreshing credentials won't fix that; the clock-drift fix will.
+
+### "No credentials found" error
+
+```bash
+# Re-authenticate and export fresh credentials
+aws sso login --profile bedrockaccess-yourproject
+aws configure export-credentials --profile bedrockaccess-yourproject --format env-no-export > .env.bedrock
+
+# Then rebuild the container
+# In VSCode: Cmd/Ctrl + Shift + P → "Dev Containers: Rebuild Container"
+```
+
+### "Access denied" for Bedrock
+
+- `./scripts/setup-bedrock-profile.sh` will fail its final verification step with `AccessDenied` if you aren't authorized for the role - reach out to your **Delivery Lead** to confirm your access
+- Verify `sso_role_name` in your `~/.aws/config` matches the permission set you were assigned (e.g., `BedrockAccess-TAK`)
+- Confirm you're in the correct AWS account (`431331090492`)
+
+### "Profile not found" error
+
+```bash
+# Reconfigure your AWS profile
+./scripts/setup-bedrock-profile.sh YourProjectSuffix
+```
+
+### Explore tool or background tasks fail with "model identifier is invalid"
+
+Haiku is not available as an inference profile in AWS GovCloud, so anything that resolves the `haiku` alias fails. Claude Code uses that alias for background work such as conversation summarization, and older versions used it for the Explore subagent too.
+
+**Solution:** Ensure your `.env` has this line uncommented:
+```bash
+ANTHROPIC_DEFAULT_HAIKU_MODEL=us-gov.anthropic.claude-sonnet-5
+```
+
+Then rebuild the container to apply the change.
+
+> **Note:** Older copies of this template also set `ANTHROPIC_SMALL_FAST_MODEL`. That variable is deprecated — `ANTHROPIC_DEFAULT_HAIKU_MODEL` replaces it, and setting both is unnecessary. Since Claude Code v2.1.198 the Explore subagent inherits your main conversation's model instead of always running on Haiku, so this no longer affects Explore.
+
+### API Error: 400 "x-anthropic-billing-header is a reserved keyword"
+
+Claude Code injects an `x-anthropic-billing-header` text block into the system prompt. Bedrock rejects this as a reserved keyword, causing a `400 Bad Request` error. This is an upstream bug ([anthropics/claude-code#24168](https://github.com/anthropics/claude-code/issues/24168)) introduced in Claude Code v2.1.36.
+
+**Solution:** Ensure your `.env` has this line uncommented:
+```bash
+CLAUDE_CODE_ATTRIBUTION_HEADER=0
+```
+
+Then rebuild the container to apply the change.
+
+> **Note:** This uses an undocumented env var as a workaround. It will be removed once the upstream bug is fixed.
+
+### `Error: spawn docker ENOENT` when running `refresh-credentials.sh`
+
+This affects the **DevContainer CLI / automation path** only (the `refresh-credentials.sh` script, which runs `devcontainer up`). The primary VS Code "Rebuild Container" workflow does not hit this.
+
+> **You may have arrived here from the script itself.** `refresh-credentials.sh` now detects a missing `docker` command during its prerequisite check and prints this same fix as a `[WARN]` before it ever reaches `devcontainer up` — so you get the one-time symlink command instead of the opaque error below. Apply the fix and re-run the script.
+
+The DevContainer CLI hardcodes a `docker` executable and does not recognize Podman as a Docker-compatible runtime, so on Podman-only machines it fails with:
+
+```
+Error: spawn docker ENOENT
+{"outcome":"error","message":"spawn docker ENOENT","description":"An error occurred setting up the container."}
+```
+
+**Solution:** Podman is CLI-compatible with Docker, so create a one-time `docker` → `podman` symlink (per machine):
+
+```bash
+sudo ln -s "$(command -v podman)" /usr/local/bin/docker
+
+# Verify — this should print the Podman version
+docker --version
+```
+
+> **Note:** This is an upstream limitation of the DevContainer CLI, not this project. VS Code's Dev Containers extension has a separate Podman story via the `dev.containers.dockerPath` setting.
+
+## Assistance
+
+If you run into issues, please hit us up in the **#r-and-d** Slack channel.
+
+---
+
+**[← Back to Main README](../README.md)**

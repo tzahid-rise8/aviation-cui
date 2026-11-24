@@ -1,0 +1,56 @@
+{
+  "tui": "default",
+  "permissions": {
+    "deny": [
+      "Read(./.env*)",
+      "Read(**/.env*)",
+      "Edit(./.env*)",
+      "Edit(**/.env*)",
+      "Bash(env)",
+      "Bash(printenv)",
+      "Bash(export)",
+      "Bash(cat /proc/*/environ)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)",
+      "Read(**/*.p12)",
+      "Read(**/*credentials*.json)",
+      "Read(**/*credentials*.csv)",
+      "Read(**/*credentials*.yaml)",
+      "Read(**/*credentials*.yml)",
+      "Read(**/.aws/credentials)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./.claude/hooks/notify-attention.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./.claude/hooks/notify-stop.sh"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./.claude/hooks/notify-attention.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

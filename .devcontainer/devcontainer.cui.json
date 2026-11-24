@@ -1,0 +1,59 @@
+{
+  "dockerComposeFile": "docker-compose.firewall.yml",
+  "service": "ai-assistant",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "aiAssistant",
+  "runServices": ["firewall-manager", "ai-assistant"],
+  "overrideCommand": false,
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "telemetry.telemetryLevel": "off",
+        "extensions.autoUpdate": false,
+        "extensions.autoCheckUpdates": false,
+        "extensions.ignoreRecommendations": true,
+        "workbench.enableExperiments": false,
+        "workbench.settings.enableNaturalLanguageSearch": false,
+        "update.mode": "none",
+        "update.showReleaseNotes": false,
+        "git.autofetch": false,
+        "git.autorefresh": false,
+        "npm.fetchOnlinePackageInfo": false,
+        "extensions.verifySignature": false,
+        "http.proxySupport": "off",
+        "settingsSync.enable": false,
+        "workbench.cloudChanges.autoResume": "off",
+        "workbench.cloudChanges.continueOn": "off",
+        "chat.detectParticipant.enabled": false
+      }
+
+      // ======================================================================
+      // PERFORMANCE OPTIMIZATION: File Watcher Exclusions (Optional)
+      // ======================================================================
+      // Prevents VS Code from watching large directories that change frequently,
+      // avoiding "too many files open" errors and reducing CPU/memory usage.
+      // Uncomment and merge into the settings object above if you have large
+      // node_modules or build directories.
+      // ======================================================================
+      // Additional settings to merge above:
+      //   "files.watcherExclude": {
+      //     "**/node_modules/**": true,
+      //     "**/.git/objects/**": true,
+      //     "**/.git/subtree-cache/**": true,
+      //     "**/dist/**": true,
+      //     "**/build/**": true,
+      //     "**/.next/**": true,
+      //     "**/.pnpm-store/**": true,
+      //     "**/target/**": true,        // Rust
+      //     "**/__pycache__/**": true    // Python
+      //   },
+      //   "search.exclude": {
+      //     "**/node_modules": true,
+      //     "**/dist": true,
+      //     "**/build": true,
+      //     "**/.next": true,
+      //     "**/target": true
+      //   }
+    }
+  }
+}

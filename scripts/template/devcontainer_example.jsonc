@@ -1,0 +1,94 @@
+{
+  "image": "ghcr.io/rise8-us/xpai/ai-assistant-home@sha256:54e5597807c9742e2e2c7fdb74cf7edbd3e1a22d3ef4d810993731c9df0e1c8c",
+  "postCreateCommand": "echo 'Container ready for Non-CUI projects with AI assistants pre-installed'",
+  "runArgs": [
+    "--env-file",".env",
+    "--cap-add=SYS_TIME",
+    // Required for Podman rootless: maps host user to aiAssistant (UID/GID 1001)
+    // so bind-mounted files are readable/writable inside the container.
+    // aiAssistant is pinned to UID/GID 1001 — this value is stable across image updates.
+    "--userns=keep-id:uid=1001,gid=1001"
+  ],
+
+  // ============================================================================
+  // Claude Code Config Persistence
+  // ============================================================================
+  // Persists ~/.claude/ (settings, conversation history, init marker) across
+  // container rebuilds. Volume is automatically namespaced per project folder.
+  // ============================================================================
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-claude-config,target=/home/aiAssistant/.claude,type=volume"
+
+    // ========================================================================
+    // PERFORMANCE OPTIMIZATION: Cache Persistence (Optional)
+    // ========================================================================
+    // Uncomment to persist package manager caches across container rebuilds.
+    //
+    // IMPORTANT: Replace "YOURPROJECT" with your project name (no spaces/dashes)
+    // Example: "myapp" creates volumes like "myapp-node-modules", "myapp-playwright"
+    //
+    // Without these volumes, you'll reinstall all packages on every container restart.
+    // With volumes: restart in seconds. Without: 5-15 minutes for full reinstall.
+    // ========================================================================
+
+    // // Node.js projects: persist node_modules and package manager caches
+    // ,"source=YOURPROJECT-node-modules,target=/workspaces/${localWorkspaceFolderBasename}/node_modules,type=volume"
+    // ,"source=YOURPROJECT-npm-cache,target=/home/aiAssistant/.npm,type=volume"
+    // ,"source=YOURPROJECT-pnpm-cache,target=/home/aiAssistant/.cache/node,type=volume"
+    // ,"source=YOURPROJECT-pnpm-store,target=/home/aiAssistant/.local/share/pnpm,type=volume"
+
+    // // Playwright: persist browser binaries (~500MB download saved)
+    // ,"source=YOURPROJECT-playwright,target=/home/aiAssistant/.cache/ms-playwright,type=volume"
+
+    // // Next.js: persist build cache
+    // ,"source=YOURPROJECT-next-cache,target=/workspaces/${localWorkspaceFolderBasename}/.next,type=volume"
+
+    // // Python: persist pip cache
+    // ,"source=YOURPROJECT-pip-cache,target=/home/aiAssistant/.cache/pip,type=volume"
+
+    // // Go: persist module cache
+    // ,"source=YOURPROJECT-go-cache,target=/home/aiAssistant/go/pkg/mod,type=volume"
+  ],
+
+  // Override workspace mount for better macOS performance (uses cached I/O)
+  // "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached",
+  // "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code"
+      ]
+
+      // ============================================================================
+      // PERFORMANCE OPTIMIZATION: File Watcher Exclusions (Optional)
+      // ============================================================================
+      // Prevents VS Code from watching large directories that change frequently,
+      // avoiding "too many files open" errors and reducing CPU/memory usage.
+      // Uncomment if you have large node_modules or build directories.
+      // ============================================================================
+      // "settings": {
+      //   "files.watcherExclude": {
+      //     "**/node_modules/**": true,
+      //     "**/.git/objects/**": true,
+      //     "**/.git/subtree-cache/**": true,
+      //     "**/dist/**": true,
+      //     "**/build/**": true,
+      //     "**/.next/**": true,
+      //     "**/.pnpm-store/**": true,
+      //     "**/target/**": true,        // Rust
+      //     "**/__pycache__/**": true    // Python
+      //   },
+      //   "search.exclude": {
+      //     "**/node_modules": true,
+      //     "**/dist": true,
+      //     "**/build": true,
+      //     "**/.next": true,
+      //     "**/target": true
+      //   }
+      // }
+    }
+  },
+
+  "remoteUser": "aiAssistant"
+}

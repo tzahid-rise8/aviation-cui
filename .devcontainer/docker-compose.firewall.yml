@@ -1,0 +1,114 @@
+version: '3.8'
+
+# ============================================================================
+# Container Naming
+# ============================================================================
+# Default names: cui-firewall-manager, cui-ai-assistant
+# To rename (e.g., for multiple projects), edit the container_name fields below
+# ============================================================================
+
+services:
+  # Firewall Manager Container
+  # Prebuilt container with iptables and firewall script baked in
+  # Provides network namespace shared by ai-assistant container
+  firewall-manager:
+    container_name: cui-firewall-manager
+    # Prebuilt firewall manager image with baked-in dependencies
+    # Digest is auto-updated by GitHub Actions on new builds
+    image: ghcr.io/rise8-us/xpai/firewall-manager@sha256:02b3d234f8dc843f0da003f8e5d332a323ad76c31851075054313e04cf5f892a
+    cap_add:
+      - NET_ADMIN
+      # iptables' `-m set` match opens a raw socket to query the ipset kernel
+      # module; without NET_RAW it fails with "Can't open socket to ipset"
+      - NET_RAW
+      - SYS_TIME
+    volumes:
+      # Only whitelist needs to be mounted - everything else is baked into image
+      - ../firewall/whitelist.txt:/firewall/whitelist.txt:ro
+      # Firewall audit logs (DNS queries and refusals, blocked packets). Mounted
+      # only into this container, so the AI container cannot read or alter
+      # them, and kept across rebuilds. Retention is capped at FW_LOG_MAX_MB
+      # (default 1024); see docs/firewall/FIREWALL-COMPLIANCE.md.
+      # Replace "YOURPROJECT" with your project name (no spaces/dashes)
+      - YOURPROJECT-firewall-logs:/var/log/firewall
+    # The container log is a live view of the audit logs (the volume above is
+    # the durable copy). Podman/Docker logs are unbounded by default, so cap it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/firewall-healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # AI Assistant Container
+  # Unprivileged container with no capabilities
+  # Shares network namespace with firewall-manager
+  ai-assistant:
+    image: ghcr.io/rise8-us/xpai/ai-assistant-home@sha256:54e5597807c9742e2e2c7fdb74cf7edbd3e1a22d3ef4d810993731c9df0e1c8c
+    container_name: cui-ai-assistant
+    network_mode: "service:firewall-manager"
+    cap_drop:
+      - ALL
+    # Required for Podman rootless: maps host user to aiAssistant (UID/GID 1001)
+    # so bind-mounted files are readable/writable inside the container.
+    # aiAssistant is pinned to UID/GID 1001 — this value is stable across image updates.
+    userns_mode: "keep-id:uid=1001,gid=1001"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      firewall-manager:
+        condition: service_healthy
+    volumes:
+      # Mount workspace (adjust path as needed)
+      - ../:/workspace:cached
+      # Persist Claude Code config (settings, history, init marker) across rebuilds
+      # Replace "YOURPROJECT" with your project name (no spaces/dashes)
+      - YOURPROJECT-claude-config:/home/aiAssistant/.claude
+      # ========================================================================
+      # PERFORMANCE OPTIMIZATION: Cache Persistence (Optional)
+      # ========================================================================
+      # Uncomment to persist caches across rebuilds. Define volumes below first.
+      # Replace "YOURPROJECT" with your project name (no spaces/dashes).
+      # ========================================================================
+      # - YOURPROJECT-node-modules:/workspace/node_modules
+      # - YOURPROJECT-npm-cache:/home/aiAssistant/.npm
+      # - YOURPROJECT-pnpm-store:/home/aiAssistant/.local/share/pnpm
+      # - YOURPROJECT-playwright:/home/aiAssistant/.cache/ms-playwright
+      # - YOURPROJECT-pip-cache:/home/aiAssistant/.cache/pip
+      # - YOURPROJECT-go-cache:/home/aiAssistant/go/pkg/mod
+    working_dir: /workspace
+    env_file:
+      - ../.env.bedrock
+      - ../.env
+    restart: unless-stopped
+    # Keep container running
+    command: sleep infinity
+
+# Claude Code config persistence
+# Replace "YOURPROJECT" with your project name (no spaces/dashes)
+volumes:
+  YOURPROJECT-claude-config:
+  YOURPROJECT-firewall-logs:
+
+# ============================================================================
+# PERFORMANCE OPTIMIZATION: Named Volumes (Optional)
+# ============================================================================
+# Uncomment to enable cache persistence. Replace "YOURPROJECT" with your
+# project name, then uncomment corresponding mounts in ai-assistant.volumes.
+# Add these under the 'volumes:' section above.
+# ============================================================================
+#   YOURPROJECT-node-modules:
+#   YOURPROJECT-npm-cache:
+#   YOURPROJECT-pnpm-store:
+#   YOURPROJECT-playwright:
+#   YOURPROJECT-pip-cache:
+#   YOURPROJECT-go-cache:

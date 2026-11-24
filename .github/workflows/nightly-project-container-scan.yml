@@ -1,0 +1,57 @@
+name: Nightly Project Container Security Scan
+
+# This workflow scans your published container images for security vulnerabilities daily.
+# When vulnerabilities are found, it automatically creates a GitHub issue with:
+# - Details about the vulnerabilities
+# - Links to workflow logs
+# - Suggested remediation steps
+
+on:
+  # IMPORTANT: Uncomment the schedule trigger below to enable nightly security scans
+  # This is commented out by default to prevent unintended workflow runs
+  # in forked repositories. Remove the '#' at the start of each line to enable.
+
+  # schedule:
+  #   # Run nightly at 2:00 AM UTC
+  #   - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/project-container
+
+jobs:
+  nightly-security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Authenticate to pull the image from the registry
+      - name: Log in to Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Scan the latest published image for vulnerabilities
+      - name: Security scan
+        id: scan
+        uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          trivyignores-path: project-container/.trivyignore
+
+      - name: Record scan result
+        if: always()
+        run: |
+          if [ "${{ steps.scan.outcome }}" = "success" ]; then
+            echo "✅ Security scan passed for latest image"
+          else
+            echo "❌ Security scan failed for latest image"
+          fi

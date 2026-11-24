@@ -1,0 +1,205 @@
+name: Build Project Container
+
+# This workflow builds, tests, and publishes your project-specific container.
+# It runs on:
+# - Pushes to main that modify container files
+# - Pull requests that modify container files
+# - Manual trigger via workflow_dispatch
+
+on:
+  # IMPORTANT: Uncomment the triggers below to enable automatic builds
+  # These are commented out by default to prevent unintended workflow runs
+  # in forked repositories. Remove the '#' at the start of each line to enable.
+
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'project-container/**'
+  #     - '.github/workflows/build-project-container.yml'
+  #     - '.github/actions/**'
+  # pull_request:
+  #   paths:
+  #     - 'project-container/**'
+  #     - '.github/workflows/build-project-container.yml'
+  #     - '.github/actions/**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  # Base image reference without tag or digest (e.g., ghcr.io/owner/repo/project-container)
+  IMAGE: ghcr.io/${{ github.repository }}/project-container
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: write
+      security-events: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Setup multi-architecture build environment
+      - name: Setup container build environment
+        uses: ./.github/actions/setup-container-build
+        with:
+          registry: ${{ env.REGISTRY }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extract metadata for container image (tags, labels, annotations)
+      - name: Extract container metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # Build for both AMD64 (GitHub runners, Intel Macs) and ARM64 (Apple Silicon Macs)
+      # AMD64 listed first as it's the CI priority architecture
+      # Images are pushed to registry for testing since multi-arch builds can't be loaded locally
+      #
+      # TROUBLESHOOTING: If this step fails with "403 Forbidden" on first push:
+      #   1. Visit: https://github.com/orgs/rise8-us/packages/container/REPO-NAME%2Fproject-container/settings
+      #   2. Add your repository with "Write" access under "Manage Actions access"
+      #   3. Re-run this workflow
+      # See docs/TROUBLESHOOTING.md for detailed instructions
+      - name: Build and push test image
+        id: build
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: project-container
+          file: project-container/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:test-${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+
+      # Test the AMD64 variant (GitHub Actions runners are AMD64)
+      # Explicitly pull with --platform to ensure correct architecture variant
+      - name: Test container functionality
+        run: |
+          cd project-container
+          # Explicitly pull AMD64 variant to ensure we test the correct architecture
+          docker pull --platform linux/amd64 "${{ env.IMAGE }}:test-${{ github.sha }}"
+          # Verify we got the correct architecture
+          ARCH=$(docker inspect "${{ env.IMAGE }}:test-${{ github.sha }}" --format '{{.Architecture}}')
+          echo "Pulled image architecture: $ARCH"
+          if [ "$ARCH" != "amd64" ]; then
+            echo "❌ ERROR: Expected amd64 architecture but got $ARCH"
+            exit 1
+          fi
+          CONTAINER_RUNTIME=docker IMAGE_TAG="${{ env.IMAGE }}:test-${{ github.sha }}" ./test.sh
+
+      # Scan for security vulnerabilities
+      - name: Security scan
+        uses: ./.github/actions/trivy-scan
+        with:
+          image-ref: ${{ env.IMAGE }}:test-${{ github.sha }}
+          trivyignores-path: project-container/.trivyignore
+
+      # Tag and push as latest (only on main branch after tests pass)
+      - name: Promote to latest tag
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # Tag the tested image as latest and with SHA
+          docker buildx imagetools create \
+            ${{ env.IMAGE }}:test-${{ github.sha }} \
+            --tag ${{ env.IMAGE }}:latest \
+            --tag ${{ env.IMAGE }}:sha-${{ github.sha }}
+
+          echo "✅ Successfully promoted image to latest"
+          echo "📦 Image digest: ${{ steps.build.outputs.digest }}"
+          echo "🏷️  Tags: latest, sha-${{ github.sha }}"
+
+      # Update digest in devcontainer and docker-compose files
+      - name: Update image digests in devcontainer files
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          # NEW_DIGEST from docker/build-push-action is the full digest, including the 'sha256:' prefix.
+          # The sed pattern matches '@sha256:oldhash' and replaces the entire digest with '@${NEW_DIGEST}',
+          # resulting in '@sha256:newhash' since NEW_DIGEST includes the prefix.
+          NEW_DIGEST="${{ steps.build.outputs.digest }}"
+          IMAGE_REF="${{ env.IMAGE }}"
+
+          # Validate digest format to prevent malformed image references
+          if [[ ! "$NEW_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "❌ Error: Invalid digest format: $NEW_DIGEST"
+            echo "Expected format: sha256:<64 hex characters>"
+            exit 1
+          fi
+
+          echo "Updating files with digest: $NEW_DIGEST"
+
+          # Files to update with new project container digest:
+          # - devcontainer.json: direct image reference or docker-compose reference
+          # - docker-compose.firewall.yml: CUI setup with ai-assistant service
+          FILES_TO_UPDATE=(
+            ".devcontainer/devcontainer.json"           # Direct image or compose reference
+            ".devcontainer/docker-compose.firewall.yml" # CUI setup: ai-assistant service
+          )
+
+          UPDATED_FILES=()
+          for file in "${FILES_TO_UPDATE[@]}"; do
+            if [ -f "$file" ]; then
+              # Update project-container image references with new digest
+              sed -i "s|${IMAGE_REF}@sha256:[a-f0-9]*|${IMAGE_REF}@${NEW_DIGEST}|g" "$file"
+
+              # Check if this specific file changed
+              if ! git diff --quiet "$file"; then
+                echo "📝 Updated: $file"
+                UPDATED_FILES+=("$file")
+              fi
+            fi
+          done
+
+          # Check if any files were updated
+          if [ ${#UPDATED_FILES[@]} -eq 0 ]; then
+            echo "✅ All files already up to date"
+            echo "CHANGES_MADE=false" >> $GITHUB_ENV
+          else
+            echo "✅ Updated ${#UPDATED_FILES[@]} file(s)"
+            echo "CHANGES_MADE=true" >> $GITHUB_ENV
+            # Export updated files list for PR body (printf repeats format for each array element)
+            printf -v UPDATED_FILES_LIST -- "- %s\n" "${UPDATED_FILES[@]}"
+            echo "UPDATED_FILES_LIST<<EOF" >> $GITHUB_ENV
+            echo "$UPDATED_FILES_LIST" >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          fi
+
+      - name: Create PR for digest updates
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.CHANGES_MADE == 'true'
+        uses: ./.github/actions/create-automated-pr
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          branch-name: auto-update-project-container-${{ github.sha }}
+          commit-message: |
+            chore: update devcontainer files to latest project container
+
+            Automated update of devcontainer configuration files to use the latest
+            project container image built in workflow run #${{ github.run_number }}.
+
+            - Project container digest: ${{ steps.build.outputs.digest }}
+            - Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          pr-title: "chore: update devcontainer files to latest project container"
+          pr-body: |
+            ## Summary
+            Automated update of devcontainer configuration files to use the latest project container image.
+
+            ## Changes
+            - Updated project container digest to: `${{ steps.build.outputs.digest }}`
+            - Workflow run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            ## Files Updated
+            ${{ env.UPDATED_FILES_LIST }}
+
+            🤖 Automated PR created by GitHub Actions

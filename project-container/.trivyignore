@@ -1,0 +1,48 @@
+# Trivy Vulnerability Ignore File
+# This file contains vulnerabilities that are being intentionally ignored
+# Each entry should include a comment explaining why it's safe to ignore
+
+# ==================== POLICY ====================
+# GitHub workflows enforce: CRITICAL,HIGH severity only
+# See: .github/actions/trivy-scan/action.yml
+#
+# MEDIUM and LOW severity vulnerabilities do not block CI/CD and
+# should NOT be added to this file unless there is a specific reason
+# to suppress them from local development scans.
+
+# ==================== EXAMPLE FORMAT ====================
+# CVE-YYYY-XXXXX - Brief description
+# Affects: package-name version
+# Severity: CRITICAL/HIGH/MEDIUM/LOW
+# Issue: Detailed description of vulnerability
+# Risk: Analysis of actual risk in this context
+# Status: Fixed in version X.Y.Z / No fix available (affected)
+# Reason: Why it's safe to ignore (false positive, not applicable, etc.)
+# Review: When to re-evaluate this decision
+# CVE-YYYY-XXXXX
+
+# ==================== ACTIVE IGNORES ====================
+
+# None. The ai-assistant-home base is UBI10 (ubi10/ubi-minimal) and its scan
+# is clean (see upstream image/.trivyignore, which has no active entries), so
+# this template ships with an empty ignore list. Add entries here only for
+# CRITICAL/HIGH CVEs that your own customizations introduce, each with a
+# documented justification following the EXAMPLE FORMAT above.
+
+# ==================== NOTES ====================
+# This is the starter template for new project containers based on
+# ai-assistant-home (UBI10 minimal). When you customize your container,
+# review scan results and add entries here only for CRITICAL/HIGH
+# vulnerabilities that need to be suppressed with documented justification.
+#
+# If you install skopeo from RHEL repos: expect periodic HIGH CVEs from its
+# bundled Go stdlib. skopeo's ubi-10-appstream build tracks Red Hat's rebuild
+# cadence, so it lags upstream Go security releases between rebuilds. See the
+# upstream project-container .trivyignore for the risk-acceptance pattern:
+# https://github.com/rise8-us/xpai-ai-assistant-container/blob/main/project-container/.trivyignore
+#
+# If you install gh (GitHub CLI) or other Go-based tools: expect Go stdlib
+# CVEs from their embedded Go runtimes (they lag upstream Go until the tool
+# is rebuilt). Triage each on its own merits.
+
+# Last reviewed: 2026-07-13
